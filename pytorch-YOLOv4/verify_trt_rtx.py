@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import numpy as np
 
@@ -38,7 +39,20 @@ def _load_trt_outputs(json_path):
     return outputs
 
 
+def _load_trt_outputs_retry(json_path, retries=3, delay=0.2):
+    last_err = None
+    for _ in range(retries):
+        try:
+            return _load_trt_outputs(json_path)
+        except json.JSONDecodeError as err:
+            last_err = err
+            time.sleep(delay)
+    raise last_err
+
+
 def _imread_unicode(path):
+    if not os.path.exists(path):
+        return None
     try:
         data = np.fromfile(path, dtype=np.uint8)
         if data.size == 0:
@@ -173,7 +187,12 @@ def main():
             shape_str = f"1x3x{args.size}x{args.size}"
             _run_trt(args.engine, input_arg, output_arg, shape_str, trt_exe)
 
-            outputs = _load_trt_outputs(output_json)
+            try:
+                outputs = _load_trt_outputs_retry(output_json)
+            except json.JSONDecodeError as exc:
+                print(f"Failed to parse output JSON, skipping: {output_json}")
+                print(f"Reason: {exc}")
+                continue
             if "boxes" not in outputs or "confs" not in outputs:
                 raise SystemExit(f"Missing outputs in JSON. Got keys: {list(outputs.keys())}")
 
