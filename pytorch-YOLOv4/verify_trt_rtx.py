@@ -38,8 +38,21 @@ def _load_trt_outputs(json_path):
     return outputs
 
 
+def _imread_unicode(path):
+    image = cv2.imread(path)
+    if image is not None:
+        return image
+    try:
+        data = np.fromfile(path, dtype=np.uint8)
+        if data.size == 0:
+            return None
+        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
 def _prepare_input(image_path, size):
-    image_src = cv2.imread(image_path)
+    image_src = _imread_unicode(image_path)
     if image_src is None:
         raise SystemExit(f"Failed to read image: {image_path}")
     in_w, in_h = size
@@ -66,15 +79,13 @@ def _run_trt(engine_path, input_bin, output_json, shape_str, trt_exe):
     subprocess.run(cmd, check=True)
 
 
-def _list_images(input_dir, limit):
+def _list_images(input_dir):
     exts = {".jpg", ".jpeg", ".png", ".bmp"}
     names = []
     for name in os.listdir(input_dir):
         if os.path.splitext(name.lower())[1] in exts:
             names.append(name)
     names.sort()
-    if limit is not None:
-        names = names[:limit]
     return [os.path.join(input_dir, n) for n in names]
 
 
@@ -105,14 +116,19 @@ def main():
 
     if args.input_dir:
         os.makedirs(args.out_dir, exist_ok=True)
-        images = _list_images(args.input_dir, args.limit)
+        images = _list_images(args.input_dir)
         if not images:
             raise SystemExit(f"No images found in: {args.input_dir}")
     else:
         images = [args.image]
 
+    processed = 0
     for image_path in images:
-        image_src, img_in = _prepare_input(image_path, (args.size, args.size))
+        try:
+            image_src, img_in = _prepare_input(image_path, (args.size, args.size))
+        except SystemExit as exc:
+            print(str(exc))
+            continue
 
         with tempfile.TemporaryDirectory() as tmpdir:
             input_bin = os.path.join(tmpdir, "input.bin")
@@ -138,6 +154,7 @@ def main():
                 out_path = args.out
             plot_boxes_cv2(image_src, boxes_batch[0], savename=out_path, class_names=class_names)
             print(f"Saved: {out_path}")
+            processed += 1
 
             if args.keep:
                 keep_dir = os.path.splitext(out_path)[0] + "_debug"
@@ -145,6 +162,12 @@ def main():
                 shutil.copy2(input_bin, os.path.join(keep_dir, "input.bin"))
                 shutil.copy2(output_json, os.path.join(keep_dir, "output.json"))
                 print(f"Saved intermediates to: {keep_dir}")
+
+        if args.input_dir and processed >= args.limit:
+            break
+
+    if args.input_dir:
+        print(f"Processed {processed} image(s).")
 
 
 if __name__ == "__main__":
