@@ -39,16 +39,17 @@ def _load_trt_outputs(json_path):
 
 
 def _imread_unicode(path):
-    image = cv2.imread(path)
-    if image is not None:
-        return image
     try:
         data = np.fromfile(path, dtype=np.uint8)
         if data.size == 0:
             return None
-        return cv2.imdecode(data, cv2.IMREAD_COLOR)
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if image is not None:
+            return image
     except Exception:
-        return None
+        pass
+    # Fallback for unusual cases
+    return cv2.imread(path)
 
 
 def _prepare_input(image_path, size):
@@ -79,6 +80,21 @@ def _run_trt(engine_path, input_bin, output_json, shape_str, trt_exe):
     subprocess.run(cmd, check=True)
 
 
+def _resolve_path(path):
+    if path is None:
+        return None
+    if os.path.exists(path):
+        return path
+    cand = os.path.join(ROOT, path)
+    if os.path.exists(cand):
+        return cand
+    parent = os.path.dirname(ROOT)
+    cand = os.path.join(parent, path)
+    if os.path.exists(cand):
+        return cand
+    return path
+
+
 def _list_images(input_dir):
     exts = {".jpg", ".jpeg", ".png", ".bmp"}
     names = []
@@ -87,6 +103,11 @@ def _list_images(input_dir):
             names.append(name)
     names.sort()
     return [os.path.join(input_dir, n) for n in names]
+
+def _ensure_tmp_root():
+    root = os.path.join(os.getcwd(), "_trt_tmp")
+    os.makedirs(root, exist_ok=True)
+    return root
 
 
 def main():
@@ -109,6 +130,17 @@ def main():
     if os.path.sep not in trt_exe and shutil.which(trt_exe) is None:
         raise SystemExit("tensorrt_rtx not found. Pass --trt <full_path_to_tensorrt_rtx.exe> or add it to PATH.")
 
+    args.engine = _resolve_path(args.engine)
+    args.names = _resolve_path(args.names)
+    args.image = _resolve_path(args.image)
+    if args.input_dir:
+        args.input_dir = _resolve_path(args.input_dir)
+
+    if args.engine and not os.path.exists(args.engine):
+        raise SystemExit(f"Engine not found: {args.engine}")
+    if args.names and not os.path.exists(args.names):
+        raise SystemExit(f"Names file not found: {args.names}")
+
     if not args.image and not args.input_dir:
         raise SystemExit("Provide --image or --input_dir.")
     if args.image and args.input_dir:
@@ -123,6 +155,7 @@ def main():
         images = [args.image]
 
     processed = 0
+    tmp_root = _ensure_tmp_root()
     for image_path in images:
         try:
             image_src, img_in = _prepare_input(image_path, (args.size, args.size))
@@ -130,13 +163,15 @@ def main():
             print(str(exc))
             continue
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=tmp_root) as tmpdir:
             input_bin = os.path.join(tmpdir, "input.bin")
             output_json = os.path.join(tmpdir, "output.json")
             img_in.tofile(input_bin)
 
+            input_arg = os.path.relpath(input_bin, os.getcwd())
+            output_arg = os.path.relpath(output_json, os.getcwd())
             shape_str = f"1x3x{args.size}x{args.size}"
-            _run_trt(args.engine, input_bin, output_json, shape_str, trt_exe)
+            _run_trt(args.engine, input_arg, output_arg, shape_str, trt_exe)
 
             outputs = _load_trt_outputs(output_json)
             if "boxes" not in outputs or "confs" not in outputs:
